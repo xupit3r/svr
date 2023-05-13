@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use futures::TryStreamExt as _;
+use hyper::body::HttpBody;
 use hyper::{Method, Body, Request, Response, Server, StatusCode};
 use hyper::service::{make_service_fn, service_fn};
 
@@ -25,6 +26,34 @@ async fn echo(req: Request<Body>) -> Result<Response<Body>, Infallible> {
                 });
 
             *response.body_mut() = Body::wrap_stream(mapping);
+        },
+        (&Method::POST, "/echo/reverse") => {
+            let upper = req.body().size_hint().upper().unwrap_or(u64::MAX);
+
+            if upper > 1024 * 64 {
+                *response.body_mut() = Body::from("body too large");
+                *response.status_mut() = StatusCode::PAYLOAD_TOO_LARGE;
+                return Ok(response);
+            }
+
+            let full_body = hyper::body::to_bytes(req.into_body());
+            
+            match full_body.await {
+                Ok(full_btyes) => {
+                    let reversed = full_btyes
+                        .iter()
+                        .rev()
+                        .cloned()
+                        .collect::<Vec<u8>>();
+                    *response.body_mut() = reversed.into();
+                },
+                Err(e) => {
+                    eprintln!("parsing error {}", e);
+                    *response.body_mut() = Body::from("error parsing body");
+                    *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                    return Ok(response);
+                }
+            }
         },
         _ => {
             *response.status_mut() = StatusCode::NOT_FOUND;
