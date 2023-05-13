@@ -1,52 +1,53 @@
-use std::{
-    fs,
-    io::{prelude::*, BufReader},
-    net::{TcpListener, TcpStream},
-};
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use futures::TryStreamExt as _;
+use hyper::{Method, Body, Request, Response, Server, StatusCode};
+use hyper::service::{make_service_fn, service_fn};
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+// a simple service w/ some routing
+async fn echo(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+    let mut response = Response::new(Body::empty());
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => handle_connection(stream),
-            Err(e) => println!("{:?}", e)
-        }
-    }
+    match (req.method(), req.uri().path()) {
+        (&Method::GET, "/") => {
+            *response.body_mut() = Body::from("Try POSTing data to /echo");
+        },
+        (&Method::POST, "/echo") => {
+            *response.body_mut() = req.into_body();
+        },
+        (&Method::POST, "/echo/uppercase") => {
+            let mapping = req
+                .into_body()
+                .map_ok(|chunk| {
+                    chunk.iter()
+                    .map(|byte| byte.to_ascii_uppercase())
+                    .collect::<Vec<u8>>()
+                });
+
+            *response.body_mut() = Body::wrap_stream(mapping);
+        },
+        _ => {
+            *response.status_mut() = StatusCode::NOT_FOUND;
+        },
+    };
+    
+    Ok(response)
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let buf_reader = BufReader::new(&mut stream);
-    let request_line = buf_reader.lines().next().unwrap().unwrap();
+#[tokio::main]
+async fn main() {
+    // bind to 127.0.0.1:3000
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    
+    // creates a "service" to handle connections
+    // just tied to our "hello_world" service
+    let make_svc = make_service_fn(|_conn| async {
+        Ok::<_, Infallible>(service_fn(echo))
+    });
 
-    let (status_line, filename) = if request_line == "GET / HTTP/1.1" {
-        ("HTTP/1.1 200 OK", "templates/hello.html")
-    } else {
-        ("HTTP/1.1 404 NOT FOUND", "templates/404.html")
-    };
+    let server = Server::bind(&addr).serve(make_svc);
 
-
-    match fs::read_to_string(filename) {
-        Ok(contents) => {
-            let length = contents.len();
-            let response =
-                format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
-
-            match stream.write_all(response.as_bytes()) {
-                Ok(_o) => println!("success response sent"),
-                Err(_e) => println!("FUCKING 'LL!")
-            }
-        },
-        Err(_e) => {
-            let message = "sumfing bad happend 😭";
-            let length = message.len();
-            let response = 
-                format!("HTTP/1.1 500 SERVER ERROR\r\nContent-Length: {length}\r\n\r\n{message}");
-
-            match stream.write_all(response.as_bytes()) {
-                Ok(_o) => println!("error response sent."),
-                Err(_e) => println!("FUCK!")
-            }
-        }
+    if let Err(e) = server.await {
+        eprintln!("server error: {}", e);
     }
 }
